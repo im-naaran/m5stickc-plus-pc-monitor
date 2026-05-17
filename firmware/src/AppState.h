@@ -8,6 +8,17 @@ struct MetricsState {
   int memoryPercent = 0;
 };
 
+struct PageAction {
+  String label;
+  String op;
+};
+
+struct CustomPage {
+  String name;
+  PageAction single;
+  PageAction doubleClick;
+};
+
 enum SettingsOption {
   SETTINGS_OPTION_BATTERY = 0,
   SETTINGS_OPTION_BRIGHTNESS = 1,
@@ -41,4 +52,8 @@ struct AppState {
   bool externalPowerPresent = false;
   unsigned long lastBatteryRefreshMs = 0;
   unsigned long lastExternalPowerRefreshMs = 0;
+  CustomPage pages[FirmwareConfig::MAX_CUSTOM_PAGES];
+  uint8_t customPageCount = 0;
+  uint8_t currentPageIndex = 0;
+  bool sysinfoSubscribed = false;
 };

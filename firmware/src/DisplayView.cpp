@@ -82,6 +82,15 @@ void DisplayView::draw(const AppState& state) {
     return;
   }
 
+  if (state.currentPageIndex == 0) {
+    drawHome(state);
+    return;
+  }
+
+  drawCustomPage(state);
+}
+
+void DisplayView::drawHome(const AppState& state) {
   if (!stateChanged(state)) {
     return;
   }
@@ -104,6 +113,43 @@ void DisplayView::draw(const AppState& state) {
   lastDrawnState = state;
   hasLastDrawnState = true;
   lastMainDrawMs = now;
+}
+
+void DisplayView::drawCustomPage(const AppState& state) {
+  if (!pageStateChanged(state)) {
+    return;
+  }
+
+  uint8_t pageOffset = state.currentPageIndex - 1;
+  if (pageOffset >= state.customPageCount) {
+    return;
+  }
+
+  const CustomPage& page = state.pages[pageOffset];
+  M5.Lcd.fillScreen(COLOR_BACKGROUND);
+  M5.Lcd.drawRoundRect(8, 8, 224, 94, 4, COLOR_DIM);
+
+  M5.Lcd.setTextDatum(TL_DATUM);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+  M5.Lcd.drawString(page.name, 14, 14);
+
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setTextColor(COLOR_MUTED, COLOR_BACKGROUND);
+  M5.Lcd.drawString("A", 58, 52);
+  M5.Lcd.drawString("A x2", 58, 76);
+
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextColor(COLOR_GREEN, COLOR_BACKGROUND);
+  M5.Lcd.drawString(page.single.label, 116, 46);
+  M5.Lcd.setTextColor(COLOR_YELLOW, COLOR_BACKGROUND);
+  M5.Lcd.drawString(page.doubleClick.label, 116, 70);
+
+  drawFooter(state);
+
+  lastDrawnState = state;
+  hasLastDrawnState = true;
+  lastMainDrawMs = millis();
 }
 
 void DisplayView::drawSettings(const AppState& state) {
@@ -162,7 +208,7 @@ void DisplayView::drawDisconnected(const AppState& state) {
   }
 
   M5.Lcd.fillScreen(COLOR_BACKGROUND);
-  M5.Lcd.drawRoundRect(10, 10, 220, 104, 4, COLOR_DIM);
+  M5.Lcd.drawRoundRect(8, 8, 224, 94, 4, COLOR_DIM);
   M5.Lcd.setTextDatum(MC_DATUM);
   M5.Lcd.setTextSize(2);
   M5.Lcd.setTextColor(COLOR_RED, COLOR_BACKGROUND);
@@ -273,6 +319,14 @@ void DisplayView::drawFooter(const AppState& state) {
     drawExternalPowerIcon(iconX, 112, COLOR_GREEN);
   }
 
+  if (state.connected) {
+    uint8_t totalPages = state.customPageCount + 1;
+    String pageText = String(state.currentPageIndex + 1) + "/" + totalPages;
+    M5.Lcd.setTextColor(COLOR_DIM, COLOR_BACKGROUND);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.drawCentreString(pageText, 120, 116, 1);
+  }
+
   M5.Lcd.setTextColor(COLOR_MUTED, COLOR_BACKGROUND);
   M5.Lcd.setTextSize(2);
   M5.Lcd.drawRightString(state.timeText, 228, 112, 1);
@@ -335,6 +389,37 @@ bool DisplayView::stateChanged(const AppState& state) const {
          lastDrawnState.metrics.memoryPercent != state.metrics.memoryPercent ||
          lastDrawnState.timeText != state.timeText ||
          lastDrawnState.settingsOpen != state.settingsOpen ||
+         lastDrawnState.currentPageIndex != state.currentPageIndex ||
+         lastDrawnState.customPageCount != state.customPageCount ||
+         lastDrawnState.batteryPercentKnown != state.batteryPercentKnown ||
+         lastDrawnState.batteryPercent != state.batteryPercent ||
+         lastDrawnState.externalPowerPresent != state.externalPowerPresent;
+}
+
+bool DisplayView::pageStateChanged(const AppState& state) const {
+  if (!hasLastDrawnState) {
+    return true;
+  }
+
+  uint8_t pageOffset = state.currentPageIndex > 0 ? state.currentPageIndex - 1 : 0;
+  bool pageContentChanged = false;
+  if (pageOffset < state.customPageCount && pageOffset < lastDrawnState.customPageCount) {
+    const CustomPage& page = state.pages[pageOffset];
+    const CustomPage& lastPage = lastDrawnState.pages[pageOffset];
+    pageContentChanged =
+      page.name != lastPage.name ||
+      page.single.label != lastPage.single.label ||
+      page.single.op != lastPage.single.op ||
+      page.doubleClick.label != lastPage.doubleClick.label ||
+      page.doubleClick.op != lastPage.doubleClick.op;
+  }
+
+  return lastDrawnState.connected != state.connected ||
+         lastDrawnState.settingsOpen != state.settingsOpen ||
+         lastDrawnState.currentPageIndex != state.currentPageIndex ||
+         lastDrawnState.customPageCount != state.customPageCount ||
+         pageContentChanged ||
+         lastDrawnState.timeText != state.timeText ||
          lastDrawnState.batteryPercentKnown != state.batteryPercentKnown ||
          lastDrawnState.batteryPercent != state.batteryPercent ||
          lastDrawnState.externalPowerPresent != state.externalPowerPresent;

@@ -21,13 +21,17 @@ bool SerialReceiver::readLine(String& outLine) {
     }
 
     buffer += ch;
-    if (buffer.length() > FirmwareConfig::METRICS_LINE_MAX_LENGTH) {
+    if (buffer.length() > FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH) {
       clear();
       return false;
     }
   }
 
   return false;
+}
+
+void SerialReceiver::sendLine(const String& line) {
+  Serial.print(line);
 }
 
 void SerialReceiver::clear() {

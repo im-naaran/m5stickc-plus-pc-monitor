@@ -24,6 +24,9 @@ unsigned long pendingOrientationSinceMs = 0;
 unsigned long disconnectedScreenAwakeSinceMs = 0;
 bool disconnectedBrightnessDimmed = false;
 bool buttonBLongPressHandled = false;
+bool pendingSingleA = false;
+unsigned long pendingSingleAMs = 0;
+uint8_t pendingSinglePageIndex = 0;
 bool orientationBaselineReady = false;
 float orientationBaselineAxis1 = 0.0f;
 float orientationBaselineAxis2 = 0.0f;
@@ -33,13 +36,20 @@ void handleBleInput();
 void handleConnectionTimeout();
 void updateBleDiagnostics();
 void handleButtons();
+void handlePendingButtonA();
+void switchToNextPage();
+void clearPendingSingleA();
+void sendPageAction(const PageAction& action, const char* event);
+void sendDeviceCommand(const String& op, const char* source, uint8_t page, const char* event);
+void updateHomeSubscription();
 void updateScreenPower();
 void sleepScreen();
 void wakeScreen();
 unsigned long loopDelayMs();
 void updateExternalPowerState(bool force);
 void updateBatteryState(bool force);
-void applyMetrics(const ParseResult& result);
+void applyProtocolResult(const ParseResult& result);
+void applyPagesConfig(const ParseResult& result);
 void updateDisplayOrientation();
 bool readDisplayOrientation(bool& inverted);
 float configuredOrientationAxis(uint8_t axis, float accX, float accY, float accZ);
@@ -78,6 +88,8 @@ void loop() {
   updateBatteryState(false);
   handleConnectionTimeout();
   handleButtons();
+  handlePendingButtonA();
+  updateHomeSubscription();
   updateScreenPower();
 
   if (!appState.screenSleeping) {
@@ -93,9 +105,9 @@ namespace {
 void handleSerialInput() {
   String line;
   while (serialReceiver.readLine(line)) {
-    ParseResult result = parseMetricsLine(line);
+    ParseResult result = parseProtocolLine(line);
     if (result.ok) {
-      applyMetrics(result);
+      applyProtocolResult(result);
     }
   }
 }
@@ -107,9 +119,9 @@ void handleBleInput() {
 
   String line;
   while (bleReceiver.readLine(line)) {
-    ParseResult result = parseMetricsLine(line);
+    ParseResult result = parseProtocolLine(line);
     if (result.ok) {
-      applyMetrics(result);
+      applyProtocolResult(result);
     }
   }
 }
@@ -128,6 +140,7 @@ void handleConnectionTimeout() {
 
   if (millis() - appState.lastUpdateMs > FirmwareConfig::DISCONNECT_TIMEOUT_MS) {
     appState.connected = false;
+    appState.sysinfoSubscribed = false;
   }
 }
 
@@ -143,12 +156,14 @@ void handleButtons() {
        buttonBShortReleased ||
        buttonBLongPressed)) {
     wakeScreen();
+    clearPendingSingleA();
     return;
   }
 
   if (buttonBLongPressed && !buttonBLongPressHandled) {
     buttonBLongPressHandled = true;
     if (!appState.settingsOpen) {
+      clearPendingSingleA();
       enterSettings();
     }
     return;
@@ -165,6 +180,108 @@ void handleButtons() {
 
   if (appState.settingsOpen && buttonAReleased) {
     applySelectedSettingsOption();
+    return;
+  }
+
+  if (appState.settingsOpen) {
+    return;
+  }
+
+  if (buttonBShortReleased) {
+    clearPendingSingleA();
+    switchToNextPage();
+    return;
+  }
+
+  if (buttonAReleased && appState.currentPageIndex > 0) {
+    unsigned long now = millis();
+    if (pendingSingleA &&
+        pendingSinglePageIndex == appState.currentPageIndex &&
+        now - pendingSingleAMs <= FirmwareConfig::BUTTON_DOUBLE_CLICK_MS) {
+      clearPendingSingleA();
+      uint8_t pageOffset = appState.currentPageIndex - 1;
+      if (pageOffset < appState.customPageCount) {
+        sendPageAction(appState.pages[pageOffset].doubleClick, "a.double");
+      }
+      return;
+    }
+
+    pendingSingleA = true;
+    pendingSingleAMs = now;
+    pendingSinglePageIndex = appState.currentPageIndex;
+  }
+}
+
+void handlePendingButtonA() {
+  if (!pendingSingleA) {
+    return;
+  }
+
+  if (appState.settingsOpen ||
+      appState.screenSleeping ||
+      appState.currentPageIndex == 0 ||
+      pendingSinglePageIndex != appState.currentPageIndex ||
+      millis() - pendingSingleAMs > FirmwareConfig::BUTTON_DOUBLE_CLICK_MS + 1000) {
+    clearPendingSingleA();
+    return;
+  }
+
+  if (millis() - pendingSingleAMs < FirmwareConfig::BUTTON_DOUBLE_CLICK_MS) {
+    return;
+  }
+
+  clearPendingSingleA();
+  uint8_t pageOffset = appState.currentPageIndex - 1;
+  if (pageOffset < appState.customPageCount) {
+    sendPageAction(appState.pages[pageOffset].single, "a.click");
+  }
+}
+
+void clearPendingSingleA() {
+  pendingSingleA = false;
+  pendingSingleAMs = 0;
+  pendingSinglePageIndex = 0;
+}
+
+void switchToNextPage() {
+  uint8_t totalPages = appState.customPageCount + 1;
+  if (totalPages == 0) {
+    appState.currentPageIndex = 0;
+    return;
+  }
+
+  appState.currentPageIndex = (appState.currentPageIndex + 1) % totalPages;
+}
+
+void sendPageAction(const PageAction& action, const char* event) {
+  if (action.op.length() == 0) {
+    return;
+  }
+
+  sendDeviceCommand(action.op, "page", appState.currentPageIndex, event);
+}
+
+void sendDeviceCommand(const String& op, const char* source, uint8_t page, const char* event) {
+  String line = encodeDeviceCommand(op, source, page, event);
+  serialReceiver.sendLine(line);
+  bleReceiver.sendLine(line);
+}
+
+void updateHomeSubscription() {
+  bool shouldSubscribe =
+    appState.connected &&
+    !appState.settingsOpen &&
+    appState.currentPageIndex == 0;
+
+  if (shouldSubscribe && !appState.sysinfoSubscribed) {
+    sendDeviceCommand("OP-SYSINFO", "page0", 0, "page.enter");
+    appState.sysinfoSubscribed = true;
+    return;
+  }
+
+  if (!shouldSubscribe && appState.sysinfoSubscribed) {
+    sendDeviceCommand("OP-SYSINFO-STOP", "page0", 0, "page.leave");
+    appState.sysinfoSubscribed = false;
   }
 }
 
@@ -260,7 +377,11 @@ void updateExternalPowerState(bool force) {
     vinVoltage >= FirmwareConfig::EXTERNAL_POWER_PRESENT_VOLTAGE;
 }
 
-void applyMetrics(const ParseResult& result) {
+void applyProtocolResult(const ParseResult& result) {
+  if (result.hasPagesConfig) {
+    applyPagesConfig(result);
+  }
+
   if (result.hasCpu) {
     appState.metrics.cpuPercent = result.metrics.cpuPercent;
   }
@@ -285,6 +406,24 @@ void applyMetrics(const ParseResult& result) {
   appState.connected = true;
   appState.lastUpdateMs = millis();
   wakeScreen();
+}
+
+void applyPagesConfig(const ParseResult& result) {
+  appState.customPageCount = result.pageCount;
+  for (uint8_t i = 0; i < result.pageCount; ++i) {
+    appState.pages[i] = result.pages[i];
+  }
+
+  for (uint8_t i = result.pageCount; i < FirmwareConfig::MAX_CUSTOM_PAGES; ++i) {
+    appState.pages[i] = CustomPage();
+  }
+
+  if (appState.currentPageIndex > appState.customPageCount) {
+    appState.currentPageIndex = 0;
+  }
+
+  clearPendingSingleA();
+
 }
 
 void updateDisplayOrientation() {

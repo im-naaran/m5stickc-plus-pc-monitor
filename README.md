@@ -1,12 +1,15 @@
 # M5StickC Plus PC Monitor
 
-使用 M5StickC Plus 作为电脑状态监控小屏，通过 USB 串口或 BLE GATT 显示 CPU 使用率、内存使用率、连接状态和电脑本地时间。
+使用 M5StickC Plus 作为电脑状态监控小屏，通过 USB 串口或 BLE GATT 显示 CPU 使用率、内存使用率、连接状态、电脑本地时间，并支持电脑端下发的自定义页面和按键命令回传。
 
 ## 功能概览
 
 - USB Serial 通信，默认波特率 `115200`。
 - BLE GATT 自定义服务通信，电脑端作为 Central，M5StickC Plus 作为 Peripheral。
+- 当前 sender 与固件使用 JSON Lines 双向协议。
 - 显示 CPU、RAM、PC 连接状态和 `HH:MM` 时间。
+- 支持电脑端下发自定义页面，A 键短按 / 双击触发不同操作码并回传给 sender 执行。
+- 首页显示系统指标，切到自定义页面时 sender 暂停指标推送并只发送心跳。
 - 长按 B 满 3 秒进入设置页，设置页支持滚动列表。
 - 设置页可调整亮度、查看电量、开关 BLE、开关自动旋转。
 - 显示 `Disconnected` 后 20 秒降到最低亮度，60 秒关闭屏幕背光，按 A/B 任意键唤醒。
@@ -87,13 +90,15 @@ uv run python main.py --transport ble --ble-name M5Monitor-Plus
 
 ### 4. 开机运行
 
-固件显示 `Waiting for PC` 后，启动 sender 即可显示 CPU、RAM、本地时间和连接状态。USB Serial 和 BLE 使用同一套协议，任选其一运行即可。
+固件显示 `Waiting for PC` 后，启动 sender 即可下发页面配置，并在首页显示 CPU、RAM、本地时间和连接状态。USB Serial 和 BLE 使用同一套应用协议，任选其一运行即可。
 
 ## 设备操作
 
 正常页面：
 
 - 长按 B 满 3 秒：进入设置页。
+- 短按 B：在首页和电脑端下发的自定义页面之间切换。
+- 自定义页面中短按 A / 双击 A：向 sender 回传页面配置里的操作码。
 - USB 或 BLE 收到有效数据后显示 `PC Connected`。
 - 超过 5 秒未收到有效数据后显示 `Disconnected`。
 - 显示 `Disconnected` 后 20 秒先降到最低亮度，60 秒后屏幕背光关闭；按 A 或 B 唤醒。
@@ -125,7 +130,7 @@ uv run python main.py --transport ble --ble-name M5Monitor-Plus
 
 ## 实现说明
 
-USB Serial 和 BLE 使用同一套数据格式，BLE 不走系统级蓝牙配对。协议、BLE GATT、模块职责和配置参数的细节见：
+USB Serial 和 BLE 使用同一套 JSON Lines 应用协议，BLE 不走系统级蓝牙配对。协议、BLE GATT、模块职责和配置参数的细节见：
 
 - [firmware/README.md](firmware/README.md)
 - [sender/README.md](sender/README.md)

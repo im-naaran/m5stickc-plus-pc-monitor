@@ -1,0 +1,18 @@
+{
+  "pages": [
+    {
+      "name": "clipboard",
+      "actions": [
+        {"event": "a.click", "label": "COPY", "op": "OP-CP"},
+        {"event": "a.double", "label": "PASTE", "op": "OP-PA"}
+      ]
+    },
+    {
+      "name": "window",
+      "actions": [
+        {"event": "a.click", "label": "NEXT", "op": "OP-WIN-NEXT"},
+        {"event": "a.double", "label": "LOCK", "op": "OP-LOCK"}
+      ]
+    }
+  ]
+}

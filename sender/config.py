@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 BLE_METRICS_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+BLE_COMMAND_CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 BLE_DEFAULT_DEVICE_NAME = "M5Monitor-Plus"
 
 
@@ -45,6 +46,23 @@ class Config:
 
     # 固件端用于写入指标协议文本的 BLE characteristic UUID。
     ble_metrics_characteristic_uuid: str = BLE_METRICS_CHARACTERISTIC_UUID
+
+    # 固件端用于 notify 上报按键命令的 BLE characteristic UUID。
+    ble_command_characteristic_uuid: str = BLE_COMMAND_CHARACTERISTIC_UUID
+
+    # 是否连接后下发页面配置。关闭后 sender 仍需等待设备回传 OP-SYSINFO 才发送指标。
+    pages_enabled: bool = True
+
+    # 页面配置文件路径。相对路径以 sender 目录为基准。
+    pages_config_path: str = "pages.json"
+
+    # 非首页心跳间隔，单位毫秒。
+    heartbeat_ms: int = 2000
+    min_heartbeat_ms: int = 500
+
+    # 页面数量和文本长度限制，需和固件侧保持一致。
+    max_pages: int = 6
+    max_page_text_length: int = 18
 
     # BLE 扫描超时时间，单位毫秒。
     ble_scan_timeout_ms: int = 8000
