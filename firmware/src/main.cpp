@@ -423,7 +423,6 @@ void applyPagesConfig(const ParseResult& result) {
   }
 
   clearPendingSingleA();
-
 }
 
 void updateDisplayOrientation() {

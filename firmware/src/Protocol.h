@@ -19,4 +19,3 @@ struct ParseResult {
 
 ParseResult parseProtocolLine(const String& line);
 String encodeDeviceCommand(const String& op, const char* source, uint8_t page, const char* event);
-int clampPercent(int value);

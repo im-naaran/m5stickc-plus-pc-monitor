@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
+from commands import op_cp, op_lock, op_pa, op_win_next
 from commands.context import CommandContext
 
 
@@ -19,8 +20,6 @@ async def execute(op_code: str, context: CommandContext) -> None:
     except Exception as error:
         context.logger.warn(f"command failed for {op_code}: {error}")
 
-
-from commands import op_cp, op_lock, op_pa, op_win_next
 
 COMMANDS: dict[str, CommandHandler] = {
     op_cp.OP_CODE: op_cp.run,

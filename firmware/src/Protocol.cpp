@@ -2,9 +2,7 @@
 
 #include <ArduinoJson.h>
 
-static bool parseTimezoneOffsetHours(const String& value, int& outValue);
-
-int clampPercent(int value) {
+static int clampPercent(int value) {
   if (value < 0) {
     return 0;
   }
@@ -161,7 +159,7 @@ static bool parsePagesConfig(JsonObject data, ParseResult& result) {
 }
 
 static bool parseJsonLine(const String& normalized, ParseResult& result) {
-  StaticJsonDocument<1536> document;
+  JsonDocument document;
   DeserializationError error = deserializeJson(document, normalized);
   if (error) {
     return false;
@@ -200,9 +198,9 @@ ParseResult parseProtocolLine(const String& line) {
 }
 
 String encodeDeviceCommand(const String& op, const char* source, uint8_t page, const char* event) {
-  StaticJsonDocument<192> document;
+  JsonDocument document;
   document["type"] = "device.command";
-  JsonObject data = document.createNestedObject("data");
+  JsonObject data = document["data"].to<JsonObject>();
   data["op"] = op;
   data["source"] = source;
   data["page"] = page;

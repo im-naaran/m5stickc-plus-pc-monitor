@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import platform
+
 from commands.context import CommandContext
-from system_actions import press_shortcut
 
 
 OP_CODE = "OP-CP"
 
 
+def _copy_keys() -> tuple[str, ...]:
+    if platform.system() == "Darwin":
+        return ("command", "c")
+
+    return ("ctrl", "c")
+
+
 async def run(context: CommandContext) -> None:
-    await press_shortcut("command down", "c")
+    import pyautogui
+
+    await asyncio.to_thread(pyautogui.hotkey, *_copy_keys())
     context.logger.info("executed copy")

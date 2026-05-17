@@ -16,12 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from commands.context import CommandContext
 from commands.registry import execute
-from config import (
-    BLE_DEFAULT_DEVICE_NAME,
-    BLE_METRICS_CHARACTERISTIC_UUID,
-    BLE_SERVICE_UUID,
-    Config,
-)
+from config import Config
 
 if TYPE_CHECKING:
     from bleak import BleakClient
@@ -30,7 +25,6 @@ if TYPE_CHECKING:
 PERCENT_MIN = 0
 PERCENT_MAX = 100
 SENDER_DIR = Path(__file__).resolve().parent
-BLE_WRITE_CHUNK_BYTES = 20
 
 if sys.version_info < (3, 12):
     print(
@@ -81,19 +75,19 @@ def round_half_up(value: float) -> int:
     return int(math.floor(value + 0.5))
 
 
-def format_timestamp(timestamp: float | None = None) -> str:
+def format_timestamp(timestamp: float | None = None) -> int:
     if timestamp is None:
         timestamp = time.time()
 
     try:
         number = float(timestamp)
     except (TypeError, ValueError):
-        return "0"
+        return 0
 
     if not math.isfinite(number):
-        return "0"
+        return 0
 
-    return str(math.floor(number))
+    return math.floor(number)
 
 
 def format_timezone_offset_hours(value: Any = 8) -> str:
@@ -118,7 +112,7 @@ def encode_metrics_json(
     }
 
     if include_time:
-        data["timestamp"] = int(format_timestamp(timestamp))
+        data["timestamp"] = format_timestamp(timestamp)
         data["timezone"] = format_timezone_offset_hours(timezone_offset_hours)
 
     return encode_json_line({"type": "metrics.update", "data": data})
@@ -337,6 +331,15 @@ def validate_config(config: Config) -> Config:
         )
 
     if (
+        not isinstance(config.ble_write_chunk_bytes, int)
+        or config.ble_write_chunk_bytes < config.min_ble_write_chunk_bytes
+    ):
+        errors.append(
+            "bleWriteChunkBytes must be an integer >= "
+            f"{config.min_ble_write_chunk_bytes}"
+        )
+
+    if (
         not isinstance(config.heartbeat_ms, int)
         or config.heartbeat_ms < config.min_heartbeat_ms
     ):
@@ -494,10 +497,11 @@ class ReconnectableBleTransport:
         try:
             data = line.encode("utf-8")
             chunk_count = 0
-            for offset in range(0, len(data), BLE_WRITE_CHUNK_BYTES):
+            chunk_bytes = self.config.ble_write_chunk_bytes
+            for offset in range(0, len(data), chunk_bytes):
                 await active_client.write_gatt_char(
                     self.config.ble_metrics_characteristic_uuid,
-                    data[offset:offset + BLE_WRITE_CHUNK_BYTES],
+                    data[offset:offset + chunk_bytes],
                     response=False,
                 )
                 chunk_count += 1
@@ -856,7 +860,7 @@ def ensure_macos_bluetooth_usage_description() -> None:
     if info is None:
         return
 
-    purpose = "M5Stack StickC Plus Monitor uses Bluetooth to send PC metrics to the device."
+    purpose = "M5StickC Plus PC Monitor uses Bluetooth to send PC metrics to the device."
     info["NSBluetoothAlwaysUsageDescription"] = purpose
     info["NSBluetoothPeripheralUsageDescription"] = purpose
 

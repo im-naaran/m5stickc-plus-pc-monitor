@@ -193,17 +193,7 @@ void DisplayView::drawSettings(const AppState& state) {
 }
 
 void DisplayView::drawDisconnected(const AppState& state) {
-  if (hasLastDrawnState && !lastDrawnState.connected &&
-      !lastDrawnState.settingsOpen &&
-      lastDrawnState.timeText == state.timeText &&
-      lastDrawnState.bleClientConnected == state.bleClientConnected &&
-      lastDrawnState.bleWriteCount == state.bleWriteCount &&
-      lastDrawnState.bleLineCount == state.bleLineCount &&
-      lastDrawnState.bleEnabled == state.bleEnabled &&
-      lastDrawnState.brightnessIndex == state.brightnessIndex &&
-      lastDrawnState.batteryPercentKnown == state.batteryPercentKnown &&
-      lastDrawnState.batteryPercent == state.batteryPercent &&
-      lastDrawnState.externalPowerPresent == state.externalPowerPresent) {
+  if (!disconnectedStateChanged(state)) {
     return;
   }
 
@@ -435,6 +425,24 @@ bool DisplayView::settingsStateChanged(const AppState& state) const {
          lastDrawnState.brightnessIndex != state.brightnessIndex ||
          lastDrawnState.bleEnabled != state.bleEnabled ||
          lastDrawnState.autoRotateEnabled != state.autoRotateEnabled ||
+         lastDrawnState.batteryPercentKnown != state.batteryPercentKnown ||
+         lastDrawnState.batteryPercent != state.batteryPercent ||
+         lastDrawnState.externalPowerPresent != state.externalPowerPresent;
+}
+
+bool DisplayView::disconnectedStateChanged(const AppState& state) const {
+  if (!hasLastDrawnState) {
+    return true;
+  }
+
+  return lastDrawnState.connected ||
+         lastDrawnState.settingsOpen ||
+         lastDrawnState.timeText != state.timeText ||
+         lastDrawnState.bleClientConnected != state.bleClientConnected ||
+         lastDrawnState.bleWriteCount != state.bleWriteCount ||
+         lastDrawnState.bleLineCount != state.bleLineCount ||
+         lastDrawnState.bleEnabled != state.bleEnabled ||
+         lastDrawnState.brightnessIndex != state.brightnessIndex ||
          lastDrawnState.batteryPercentKnown != state.batteryPercentKnown ||
          lastDrawnState.batteryPercent != state.batteryPercent ||
          lastDrawnState.externalPowerPresent != state.externalPowerPresent;

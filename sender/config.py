@@ -50,6 +50,10 @@ class Config:
     # 固件端用于 notify 上报按键命令的 BLE characteristic UUID。
     ble_command_characteristic_uuid: str = BLE_COMMAND_CHARACTERISTIC_UUID
 
+    # BLE 写入指标数据时使用的安全分片大小，默认 MTU 下保持 20 字节。
+    ble_write_chunk_bytes: int = 20
+    min_ble_write_chunk_bytes: int = 1
+
     # 是否连接后下发页面配置。关闭后 sender 仍需等待设备回传 OP-SYSINFO 才发送指标。
     pages_enabled: bool = True
 

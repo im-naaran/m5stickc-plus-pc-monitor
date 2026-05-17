@@ -258,6 +258,8 @@ firmware/
 | `MAIN_DISPLAY_REFRESH_INTERVAL_MS` | `250` | 主页面最小重绘间隔 |
 | `DISCONNECTED_SCREEN_DIM_MS` | `20000` | 断连后降亮等待时间 |
 | `DISCONNECTED_SCREEN_SLEEP_MS` | `60000` | 断连后熄屏等待时间 |
+| `DISCONNECTED_SCREEN_DIM_BRIGHTNESS_INDEX` | `0` | 断连降亮使用的亮度档位索引 |
+| `BUTTON_DOUBLE_CLICK_MS` | `300` | A 键双击识别窗口 |
 | `DEFAULT_TIMEZONE_OFFSET_HOURS` | `8` | 默认时区偏移 |
 | `BRIGHTNESS_LEVELS` | `20, 40, 60, 80, 100` | 亮度档位 |
 | `ORIENTATION_SAMPLE_INTERVAL_MS` | `80` | 自动旋转采样间隔 |

@@ -31,6 +31,7 @@ private:
   bool stateChanged(const AppState& state) const;
   bool pageStateChanged(const AppState& state) const;
   bool settingsStateChanged(const AppState& state) const;
+  bool disconnectedStateChanged(const AppState& state) const;
 
   AppState lastDrawnState;
   bool hasLastDrawnState = false;
