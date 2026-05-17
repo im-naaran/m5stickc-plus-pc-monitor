@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import json
 import math
 import platform
 import re
@@ -9,18 +11,12 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import psutil
-import serial
-from serial.tools import list_ports
-
-from config import (
-    BLE_DEFAULT_DEVICE_NAME,
-    BLE_METRICS_CHARACTERISTIC_UUID,
-    BLE_SERVICE_UUID,
-    Config,
-)
+from commands.context import CommandContext
+from commands.registry import execute
+from config import Config
 
 if TYPE_CHECKING:
     from bleak import BleakClient
@@ -28,6 +24,15 @@ if TYPE_CHECKING:
 
 PERCENT_MIN = 0
 PERCENT_MAX = 100
+SENDER_DIR = Path(__file__).resolve().parent
+
+if sys.version_info < (3, 12):
+    print(
+        "Python 3.12 or 3.13 is required. Run `uv sync` in the sender directory, "
+        "then start this tool with `uv run python main.py ...`.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 @dataclass(frozen=True)
@@ -70,23 +75,19 @@ def round_half_up(value: float) -> int:
     return int(math.floor(value + 0.5))
 
 
-def pad_percent(value: Any) -> str:
-    return f"{clamp_percent(value):03d}"
-
-
-def format_timestamp(timestamp: float | None = None) -> str:
+def format_timestamp(timestamp: float | None = None) -> int:
     if timestamp is None:
         timestamp = time.time()
 
     try:
         number = float(timestamp)
     except (TypeError, ValueError):
-        return "0"
+        return 0
 
     if not math.isfinite(number):
-        return "0"
+        return 0
 
-    return str(math.floor(number))
+    return math.floor(number)
 
 
 def format_timezone_offset_hours(value: Any = 8) -> str:
@@ -98,23 +99,38 @@ def format_timezone_offset_hours(value: Any = 8) -> str:
     return f"+{number}" if number >= 0 else str(number)
 
 
-def encode_metrics(
+def encode_metrics_json(
     metrics: Metrics,
     *,
     include_time: bool = False,
     timezone_offset_hours: int = 8,
     timestamp: float | None = None,
 ) -> str:
-    fields = [f"C:{pad_percent(metrics.cpu)}", f"M:{pad_percent(metrics.memory)}"]
+    data: dict[str, Any] = {
+        "cpu": clamp_percent(metrics.cpu),
+        "memory": clamp_percent(metrics.memory),
+    }
 
     if include_time:
-        fields.append(f"T:{format_timestamp(timestamp)}")
-        fields.append(f"Z:{format_timezone_offset_hours(timezone_offset_hours)}")
+        data["timestamp"] = format_timestamp(timestamp)
+        data["timezone"] = format_timezone_offset_hours(timezone_offset_hours)
 
-    return "|".join(fields) + "\n"
+    return encode_json_line({"type": "metrics.update", "data": data})
+
+
+def encode_json_line(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n"
 
 
 def collect_metrics() -> Metrics:
+    try:
+        import psutil
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "Missing dependency: psutil. Run `uv sync` in the sender directory, "
+            "then start this tool with `uv run python main.py ...`."
+        ) from error
+
     cpu_percent = psutil.cpu_percent(interval=0.1)
     memory = psutil.virtual_memory()
     active_memory = getattr(memory, "active", None)
@@ -128,6 +144,80 @@ def collect_metrics() -> Metrics:
         cpu=clamp_percent(cpu_percent),
         memory=clamp_percent(memory_percent),
     )
+
+
+def resolve_pages_config_path(config: Config) -> Path:
+    path = Path(config.pages_config_path)
+    if path.is_absolute():
+        return path
+
+    return SENDER_DIR / path
+
+
+def load_pages_config(config: Config) -> dict[str, Any]:
+    path = resolve_pages_config_path(config)
+    with path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    validate_pages_config(payload, config)
+    return payload
+
+
+def validate_pages_config(payload: Any, config: Config) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("pages config must be a JSON object")
+
+    pages = payload.get("pages")
+    if not isinstance(pages, list):
+        raise ValueError("pages config requires a pages array")
+
+    if len(pages) > config.max_pages:
+        raise ValueError(f"pages config supports at most {config.max_pages} pages")
+
+    for index, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            raise ValueError(f"page {index} must be an object")
+
+        name = page.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"page {index} requires a non-empty name")
+
+        actions = page.get("actions")
+        if not isinstance(actions, list):
+            raise ValueError(f"page {index} requires an actions array")
+
+        actions_by_event: dict[str, Any] = {}
+        for action in actions:
+            if not isinstance(action, dict):
+                raise ValueError(f"page {index} action must be an object")
+
+            event = action.get("event")
+            label = action.get("label")
+            op_code = action.get("op")
+            if not all(isinstance(value, str) and value.strip() for value in [event, label, op_code]):
+                raise ValueError(f"page {index} actions require event, label, and op strings")
+
+            if not op_code.startswith("OP-"):
+                raise ValueError(f"page {index} action op must start with OP-")
+
+            if len(label) > config.max_page_text_length or len(op_code) > config.max_page_text_length:
+                raise ValueError(
+                    f"page {index} action label/op must be <= {config.max_page_text_length} chars"
+                )
+
+            actions_by_event[event] = action
+
+        for required_event in ["a.click", "a.double"]:
+            if required_event not in actions_by_event:
+                raise ValueError(f"page {index} requires {required_event} action")
+
+
+def encode_pages_config(payload: dict[str, Any]) -> str:
+    return encode_json_line({"type": "pages.config", "data": payload})
+
+
+def encode_ping() -> str:
+    return encode_json_line({"type": "ping"})
 
 
 def merge_cli_options(config: Config, args: argparse.Namespace) -> Config:
@@ -144,6 +234,8 @@ def merge_cli_options(config: Config, args: argparse.Namespace) -> Config:
         "ble_discovery_timeout": "ble_discovery_timeout_ms",
         "ble_discovery_retries": "ble_discovery_retries",
         "ble_discovery_retry_delay": "ble_discovery_retry_delay_ms",
+        "pages_config": "pages_config_path",
+        "heartbeat": "heartbeat_ms",
         "verbose": "verbose",
     }
 
@@ -151,6 +243,9 @@ def merge_cli_options(config: Config, args: argparse.Namespace) -> Config:
         value = getattr(args, arg_name)
         if value is not None:
             updates[field_name] = value
+
+    if args.no_pages:
+        updates["pages_enabled"] = False
 
     return replace(config, **updates)
 
@@ -235,6 +330,21 @@ def validate_config(config: Config) -> Config:
             f"{config.min_ble_discovery_retry_delay_ms}"
         )
 
+    if (
+        not isinstance(config.ble_write_chunk_bytes, int)
+        or config.ble_write_chunk_bytes < config.min_ble_write_chunk_bytes
+    ):
+        errors.append(
+            "bleWriteChunkBytes must be an integer >= "
+            f"{config.min_ble_write_chunk_bytes}"
+        )
+
+    if (
+        not isinstance(config.heartbeat_ms, int)
+        or config.heartbeat_ms < config.min_heartbeat_ms
+    ):
+        errors.append(f"heartbeatMs must be an integer >= {config.min_heartbeat_ms}")
+
     if errors:
         raise ValueError(f"Invalid config: {'; '.join(errors)}")
 
@@ -248,6 +358,10 @@ def validate_config(config: Config) -> Config:
         ble_metrics_characteristic_uuid=str(
             config.ble_metrics_characteristic_uuid or ""
         ).strip(),
+        ble_command_characteristic_uuid=str(
+            config.ble_command_characteristic_uuid or ""
+        ).strip(),
+        pages_config_path=str(config.pages_config_path or "").strip(),
         verbose=bool(config.verbose),
     )
 
@@ -272,7 +386,7 @@ class ReconnectableSerialTransport:
     def __init__(self, preferred_path: str, baud_rate: int) -> None:
         self.preferred_path = preferred_path
         self.baud_rate = baud_rate
-        self._serial: serial.Serial | None = None
+        self._serial: Any | None = None
         self._path = ""
         self._lock = asyncio.Lock()
 
@@ -309,6 +423,24 @@ class ReconnectableSerialTransport:
                 self._serial = None
             raise
 
+    async def readline(self) -> str:
+        await self.open()
+        active_port = self._serial
+        if not active_port:
+            raise RuntimeError("Serial transport is not open")
+
+        try:
+            data = await asyncio.to_thread(active_port.readline)
+        except Exception:
+            if self._serial is active_port:
+                self._serial = None
+            raise
+
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace").strip()
+
+        return str(data or "").strip()
+
     async def close(self) -> None:
         active_port = self._serial
         self._serial = None
@@ -323,6 +455,9 @@ class ReconnectableBleTransport:
         self._path = ""
         self._closed = False
         self._lock = asyncio.Lock()
+        self._line_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._notify_buffer = ""
+        self._notify_started = False
 
     @property
     def path(self) -> str:
@@ -337,6 +472,16 @@ class ReconnectableBleTransport:
                 return
 
             client, label = await open_fresh_ble_connection(self.config)
+            try:
+                await self._start_notify(client)
+            except Exception as error:
+                print(
+                    "[warn] BLE command notify unavailable; continuing write-only BLE "
+                    f"session: {error}",
+                    file=sys.stderr,
+                )
+                self._notify_started = False
+
             self._client = client
             self._path = label
 
@@ -350,25 +495,73 @@ class ReconnectableBleTransport:
             raise RuntimeError("BLE transport is not open")
 
         try:
-            await active_client.write_gatt_char(
-                self.config.ble_metrics_characteristic_uuid,
-                line.encode("utf-8"),
-                response=False,
-            )
+            data = line.encode("utf-8")
+            chunk_count = 0
+            chunk_bytes = self.config.ble_write_chunk_bytes
+            for offset in range(0, len(data), chunk_bytes):
+                await active_client.write_gatt_char(
+                    self.config.ble_metrics_characteristic_uuid,
+                    data[offset:offset + chunk_bytes],
+                    response=False,
+                )
+                chunk_count += 1
+                await asyncio.sleep(0.01)
+            if self.config.verbose and chunk_count > 1:
+                print(f"[debug] BLE write chunks: {chunk_count}", file=sys.stderr)
         except Exception:
             self._client = None
+            self._notify_started = False
             raise
+
+    async def readline(self) -> str:
+        await self.open()
+        if not self._notify_started:
+            await asyncio.sleep(1)
+            return ""
+
+        try:
+            return await asyncio.wait_for(self._line_queue.get(), timeout=1)
+        except asyncio.TimeoutError:
+            return ""
+
+    async def _start_notify(self, client: BleakClient) -> None:
+        if self._notify_started:
+            return
+
+        await client.start_notify(
+            self.config.ble_command_characteristic_uuid,
+            self._handle_notify,
+        )
+        self._notify_started = True
+
+    def _handle_notify(self, _: Any, data: bytearray) -> None:
+        self._notify_buffer += bytes(data).decode("utf-8", errors="replace")
+        while "\n" in self._notify_buffer:
+            line, self._notify_buffer = self._notify_buffer.split("\n", 1)
+            normalized = line.strip()
+            if normalized:
+                self._line_queue.put_nowait(normalized)
 
     async def close(self) -> None:
         self._closed = True
         active_client = self._client
         self._client = None
+        self._notify_started = False
+        self._notify_buffer = ""
 
         if active_client and active_client.is_connected:
             await active_client.disconnect()
 
 
 def list_serial_ports() -> list[SerialPortInfo]:
+    try:
+        from serial.tools import list_ports
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "Missing dependency: pyserial. Run `uv sync` in the sender directory, "
+            "then start this tool with `uv run python main.py ...`."
+        ) from error
+
     ports = []
     for port in list_ports.comports():
         vendor_id = f"{port.vid:04x}" if port.vid is not None else ""
@@ -422,7 +615,15 @@ def select_port(ports: list[SerialPortInfo], preferred_path: str = "") -> str:
 def open_fresh_serial_port(
     preferred_path: str,
     baud_rate: int,
-) -> tuple[serial.Serial, str]:
+) -> tuple[Any, str]:
+    try:
+        import serial
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "Missing dependency: pyserial. Run `uv sync` in the sender directory, "
+            "then start this tool with `uv run python main.py ...`."
+        ) from error
+
     path = select_port(list_serial_ports(), preferred_path)
 
     try:
@@ -433,9 +634,12 @@ def open_fresh_serial_port(
     return port, path
 
 
-def write_serial_line(port: serial.Serial, line: str) -> None:
+def write_serial_line(port: Any, line: str) -> None:
     port.write(line.encode("utf-8"))
     port.flush()
+
+
+Transport = ReconnectableSerialTransport | ReconnectableBleTransport
 
 
 def create_serial_open_error(error: Exception, path: str) -> RuntimeError:
@@ -511,11 +715,19 @@ async def open_fresh_ble_connection(config: Config) -> tuple[BleakClient, str]:
 async def wait_for_gatt_characteristic(client: BleakClient, config: Config) -> None:
     async def discover() -> None:
         services = await get_client_services(client)
-        characteristic = services.get_characteristic(
+        metrics_characteristic = services.get_characteristic(
             config.ble_metrics_characteristic_uuid
         )
-        if not characteristic:
+        if not metrics_characteristic:
             raise RuntimeError("BLE metrics characteristic not found on selected device.")
+        command_characteristic = services.get_characteristic(
+            config.ble_command_characteristic_uuid
+        )
+        if not command_characteristic:
+            raise RuntimeError(
+                "BLE command notify characteristic not found. "
+                "Flash firmware with bidirectional BLE support."
+            )
 
     try:
         await asyncio.wait_for(discover(), timeout=config.ble_discovery_timeout_ms / 1000)
@@ -648,7 +860,7 @@ def ensure_macos_bluetooth_usage_description() -> None:
     if info is None:
         return
 
-    purpose = "M5Stack StickC Plus Monitor uses Bluetooth to send PC metrics to the device."
+    purpose = "M5StickC Plus PC Monitor uses Bluetooth to send PC metrics to the device."
     info["NSBluetoothAlwaysUsageDescription"] = purpose
     info["NSBluetoothPeripheralUsageDescription"] = purpose
 
@@ -707,7 +919,7 @@ def describe_ble_device(device: BLEDevice) -> str:
     return f"{name} ({address}, rssi={rssi if rssi is not None else 'unknown'})"
 
 
-async def open_transport(config: Config) -> ReconnectableSerialTransport | ReconnectableBleTransport:
+async def open_transport(config: Config) -> Transport:
     if config.transport == "ble":
         transport = ReconnectableBleTransport(config)
     else:
@@ -718,14 +930,14 @@ async def open_transport(config: Config) -> ReconnectableSerialTransport | Recon
 
 
 async def send_once(
-    transport: ReconnectableSerialTransport | ReconnectableBleTransport,
+    transport: Transport,
     logger: Logger,
     *,
     include_time: bool = False,
     timezone_offset_hours: int = 8,
 ) -> None:
     metrics = collect_metrics()
-    line = encode_metrics(
+    line = encode_metrics_json(
         metrics,
         include_time=include_time,
         timezone_offset_hours=timezone_offset_hours,
@@ -738,6 +950,8 @@ async def send_once(
 async def run_sender(config: Config, logger: Logger) -> None:
     transport = await open_transport(config)
     stop_event = asyncio.Event()
+    sysinfo_enabled = asyncio.Event()
+    immediate_metrics = asyncio.Event()
 
     def request_shutdown() -> None:
         stop_event.set()
@@ -753,29 +967,196 @@ async def run_sender(config: Config, logger: Logger) -> None:
     logger.info(f"sender started, interval: {config.interval_ms}ms")
 
     try:
-        await send_once(
-            transport,
-            logger,
-            include_time=True,
-            timezone_offset_hours=config.timezone_offset_hours,
-        )
+        if config.pages_enabled:
+            pages_payload = load_pages_config(config)
+            line = encode_pages_config(pages_payload)
+            await transport.write(line)
+            logger.debug(f"write: {line.strip()}")
+            logger.info(f"sent page config: {resolve_pages_config_path(config)}")
 
-        while not stop_event.is_set():
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=config.interval_ms / 1000)
-                break
-            except asyncio.TimeoutError:
-                pass
+        tasks = [
+            asyncio.create_task(
+                command_reader_loop(
+                    transport,
+                    config,
+                    logger,
+                    stop_event,
+                    sysinfo_enabled,
+                    immediate_metrics,
+                )
+            ),
+            asyncio.create_task(
+                metrics_loop(
+                    transport,
+                    config,
+                    logger,
+                    stop_event,
+                    sysinfo_enabled,
+                    immediate_metrics,
+                )
+            ),
+            asyncio.create_task(
+                heartbeat_loop(
+                    transport,
+                    config,
+                    logger,
+                    stop_event,
+                    sysinfo_enabled,
+                )
+            ),
+        ]
 
-            try:
-                await send_once(transport, logger)
-            except Exception as error:
-                logger.warn(f"send failed, retrying: {error}")
+        await stop_event.wait()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     except KeyboardInterrupt:
         pass
     finally:
         logger.info("closing transport")
         await transport.close()
+
+
+async def command_reader_loop(
+    transport: Transport,
+    config: Config,
+    logger: Logger,
+    stop_event: asyncio.Event,
+    sysinfo_enabled: asyncio.Event,
+    immediate_metrics: asyncio.Event,
+) -> None:
+    context = CommandContext(logger=logger, config=config)
+
+    while not stop_event.is_set():
+        try:
+            line = await transport.readline()
+        except Exception as error:
+            logger.warn(f"read failed, retrying: {error}")
+            await asyncio.sleep(1)
+            continue
+
+        if not line:
+            continue
+
+        logger.debug(f"read: {line}")
+        op_code = parse_device_command_op(line)
+        if not op_code:
+            logger.debug(f"ignore unknown inbound line: {line}")
+            continue
+
+        if op_code == "OP-SYSINFO":
+            sysinfo_enabled.set()
+            immediate_metrics.set()
+            logger.info("sysinfo enabled by device")
+            continue
+
+        if op_code == "OP-SYSINFO-STOP":
+            sysinfo_enabled.clear()
+            logger.info("sysinfo stopped by device")
+            continue
+
+        await execute(op_code, context)
+
+
+def parse_device_command_op(line: str) -> str:
+    normalized = line.strip()
+    if not normalized:
+        return ""
+
+    if normalized.startswith("OP-"):
+        return normalized
+
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError:
+        return ""
+
+    if payload.get("type") != "device.command":
+        return ""
+
+    data = payload.get("data") or {}
+    op_code = data.get("op")
+    return op_code if isinstance(op_code, str) else ""
+
+
+async def metrics_loop(
+    transport: Transport,
+    config: Config,
+    logger: Logger,
+    stop_event: asyncio.Event,
+    sysinfo_enabled: asyncio.Event,
+    immediate_metrics: asyncio.Event,
+) -> None:
+    sent_time_sync = False
+
+    while not stop_event.is_set():
+        await wait_for_event_or_stop(sysinfo_enabled, stop_event)
+        if stop_event.is_set():
+            break
+
+        immediate_metrics.clear()
+        try:
+            await send_once(
+                transport,
+                logger,
+                include_time=not sent_time_sync,
+                timezone_offset_hours=config.timezone_offset_hours,
+            )
+            sent_time_sync = True
+        except Exception as error:
+            logger.warn(f"send failed, retrying: {error}")
+
+        done, _ = await asyncio.wait(
+            wait_tasks := [
+                asyncio.create_task(stop_event.wait()),
+                asyncio.create_task(immediate_metrics.wait()),
+                asyncio.create_task(wait_for_event_clear(sysinfo_enabled)),
+            ],
+            timeout=config.interval_ms / 1000,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in wait_tasks:
+            task.cancel()
+        for task in wait_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def heartbeat_loop(
+    transport: Transport,
+    config: Config,
+    logger: Logger,
+    stop_event: asyncio.Event,
+    sysinfo_enabled: asyncio.Event,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=config.heartbeat_ms / 1000)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        if sysinfo_enabled.is_set():
+            continue
+
+        try:
+            line = encode_ping()
+            await transport.write(line)
+            logger.debug(f"write: {line.strip()}")
+        except Exception as error:
+            logger.warn(f"heartbeat failed, retrying: {error}")
+
+
+async def wait_for_event_or_stop(event: asyncio.Event, stop_event: asyncio.Event) -> None:
+    while not event.is_set() and not stop_event.is_set():
+        await asyncio.sleep(0.05)
+
+
+async def wait_for_event_clear(event: asyncio.Event) -> None:
+    while event.is_set():
+        await asyncio.sleep(0.05)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -823,6 +1204,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--ble-discovery-retry-delay",
         type=parse_integer,
         help="delay between BLE GATT discovery retries",
+    )
+    parser.add_argument("--no-pages", action="store_true", help="do not send pages config")
+    parser.add_argument("--pages-config", help="path to pages JSON config")
+    parser.add_argument(
+        "--heartbeat",
+        type=parse_integer,
+        help="heartbeat interval in milliseconds when sysinfo is paused",
     )
     parser.add_argument("--verbose", action="store_true", default=None, help="enable debug logs")
     return parser

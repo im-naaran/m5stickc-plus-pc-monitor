@@ -3,6 +3,7 @@
 #include <BLEAdvertising.h>
 #include <BLECharacteristic.h>
 #include <BLEDevice.h>
+#include <BLE2902.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <cstring>
@@ -59,6 +60,13 @@ void BleReceiver::begin() {
     FirmwareConfig::BLE_METRICS_CHARACTERISTIC_UUID,
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
   metricsCharacteristic->setCallbacks(new MetricsCharacteristicCallbacks());
+  commandCharacteristic = service->createCharacteristic(
+    FirmwareConfig::BLE_COMMAND_CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  commandCharacteristic->setValue("");
+  BLE2902* commandDescriptor = new BLE2902();
+  commandDescriptor->setNotifications(true);
+  commandCharacteristic->addDescriptor(commandDescriptor);
 
   service->start();
 
@@ -91,6 +99,7 @@ void BleReceiver::setEnabled(bool newEnabled) {
   clearQueue();
   BLEDevice::deinit(false);
   server = nullptr;
+  commandCharacteristic = nullptr;
 }
 
 bool BleReceiver::isEnabled() const {
@@ -104,9 +113,9 @@ bool BleReceiver::readLine(String& outLine) {
     return false;
   }
 
-  char line[FirmwareConfig::METRICS_LINE_MAX_LENGTH + 1];
+  char line[FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH + 1];
   strncpy(line, pendingLines[readIndex], sizeof(line));
-  line[FirmwareConfig::METRICS_LINE_MAX_LENGTH] = '\0';
+  line[FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH] = '\0';
   readIndex = (readIndex + 1) % FirmwareConfig::BLE_LINE_QUEUE_CAPACITY;
   pendingCount--;
   portEXIT_CRITICAL(&queueMux);
@@ -114,6 +123,35 @@ bool BleReceiver::readLine(String& outLine) {
   outLine = String(line);
   outLine.trim();
   return outLine.length() > 0;
+}
+
+void BleReceiver::sendLine(const String& line) {
+  if (!enabled || !clientConnected || !commandCharacteristic) {
+    return;
+  }
+
+  size_t length = line.length();
+  if (length == 0) {
+    return;
+  }
+
+  if (length > FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH) {
+    length = FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH;
+  }
+
+  const char* data = line.c_str();
+  for (size_t offset = 0; offset < length; offset += FirmwareConfig::BLE_NOTIFY_CHUNK_BYTES) {
+    size_t chunkLength = length - offset;
+    if (chunkLength > FirmwareConfig::BLE_NOTIFY_CHUNK_BYTES) {
+      chunkLength = FirmwareConfig::BLE_NOTIFY_CHUNK_BYTES;
+    }
+
+    uint8_t buffer[FirmwareConfig::BLE_NOTIFY_CHUNK_BYTES];
+    memcpy(buffer, data + offset, chunkLength);
+    commandCharacteristic->setValue(buffer, chunkLength);
+    commandCharacteristic->notify();
+    delay(10);
+  }
 }
 
 bool BleReceiver::isClientConnected() const {
@@ -165,7 +203,7 @@ void BleReceiver::handleWrite(const std::string& value) {
       continue;
     }
 
-    if (writeBufferLen >= FirmwareConfig::METRICS_LINE_MAX_LENGTH) {
+    if (writeBufferLen >= FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH) {
       clearWriteBuffer();
       continue;
     }
@@ -176,8 +214,8 @@ void BleReceiver::handleWrite(const std::string& value) {
 }
 
 void BleReceiver::enqueueLine(const String& line) {
-  char lineBuffer[FirmwareConfig::METRICS_LINE_MAX_LENGTH + 1];
-  line.substring(0, FirmwareConfig::METRICS_LINE_MAX_LENGTH)
+  char lineBuffer[FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH + 1];
+  line.substring(0, FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH)
     .toCharArray(lineBuffer, sizeof(lineBuffer));
 
   portENTER_CRITICAL(&queueMux);
@@ -189,8 +227,8 @@ void BleReceiver::enqueueLine(const String& line) {
   strncpy(
     pendingLines[writeIndex],
     lineBuffer,
-    FirmwareConfig::METRICS_LINE_MAX_LENGTH + 1);
-  pendingLines[writeIndex][FirmwareConfig::METRICS_LINE_MAX_LENGTH] = '\0';
+    FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH + 1);
+  pendingLines[writeIndex][FirmwareConfig::PROTOCOL_LINE_MAX_LENGTH] = '\0';
   writeIndex = (writeIndex + 1) % FirmwareConfig::BLE_LINE_QUEUE_CAPACITY;
   pendingCount++;
   lineCount++;

@@ -7,5 +7,6 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "bleak>=1.0.1",
     "psutil>=7.0.0",
+    "pyautogui>=0.9.54",
     "pyserial>=3.5",
 ]
